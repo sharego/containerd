@@ -34,6 +34,7 @@ import (
 	"github.com/containerd/containerd/snapshots"
 	"github.com/containerd/containerd/snapshots/devmapper/dmsetup"
 	"github.com/containerd/containerd/snapshots/storage"
+	"github.com/docker/go-units"
 	"github.com/hashicorp/go-multierror"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
@@ -72,6 +73,8 @@ func init() {
 const (
 	metadataFileName = "metadata.db"
 	fsTypeExt4       = "ext4"
+	// prefix with snapshots.inheritedLabelsPrefix
+	labelDmSize = "containerd.io/snapshot/dm.size"
 )
 
 type closeFunc func() error
@@ -373,12 +376,26 @@ func (s *Snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 	if err != nil {
 		return nil, err
 	}
+	var info snapshots.Info
+	for _, opt := range opts {
+		if err := opt(&info); err != nil {
+			return nil, err
+		}
+	}
+	baseImageSizeBytes := s.config.BaseImageSizeBytes
+	if size, ok := info.Labels[labelDmSize]; ok {
+		baseImageSize, err := units.RAMInBytes(size)
+		if err != nil {
+			return nil, errors.Wrapf(err, "Snapshotter devmapper failed to parse label(%s) value: '%s'", labelDmSize, size)
+		}
+		baseImageSizeBytes = uint64(baseImageSize)
+	}
 
 	if len(snap.ParentIDs) == 0 {
 		deviceName := s.getDeviceName(snap.ID)
-		log.G(ctx).Debugf("creating new thin device '%s'", deviceName)
+		log.G(ctx).Debugf("creating new thin device '%s' with size in bytes: %d", deviceName, baseImageSizeBytes)
 
-		err := s.pool.CreateThinDevice(ctx, deviceName, s.config.BaseImageSizeBytes)
+		err := s.pool.CreateThinDevice(ctx, deviceName, baseImageSizeBytes)
 		if err != nil {
 			log.G(ctx).WithError(err).Errorf("failed to create thin device for snapshot %s", snap.ID)
 			return nil, err
@@ -392,9 +409,9 @@ func (s *Snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 	} else {
 		parentDeviceName := s.getDeviceName(snap.ParentIDs[0])
 		snapDeviceName := s.getDeviceName(snap.ID)
-		log.G(ctx).Debugf("creating snapshot device '%s' from '%s'", snapDeviceName, parentDeviceName)
+		log.G(ctx).Debugf("creating snapshot device '%s' from '%s' with size in bytes: %d", snapDeviceName, parentDeviceName, baseImageSizeBytes)
 
-		err := s.pool.CreateSnapshotDevice(ctx, parentDeviceName, snapDeviceName, s.config.BaseImageSizeBytes)
+		err := s.pool.CreateSnapshotDevice(ctx, parentDeviceName, snapDeviceName, baseImageSizeBytes)
 		if err != nil {
 			log.G(ctx).WithError(err).Errorf("failed to create snapshot device from parent %s", parentDeviceName)
 			return nil, err

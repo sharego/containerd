@@ -150,6 +150,10 @@ func WithNewSnapshot(id string, i Image, opts ...snapshots.Opt) NewContainerOpts
 			return err
 		}
 
+		// Inherit labels from container startup configuration
+		labelsOpt := snapshots.WithLabels(snapshots.FilterInheritedLabels(c.Labels))
+		opts = append(opts, labelsOpt)
+
 		parent := identity.ChainID(diffIDs).String()
 		c.Snapshotter, err = client.resolveSnapshotterName(ctx, c.Snapshotter)
 		if err != nil {
